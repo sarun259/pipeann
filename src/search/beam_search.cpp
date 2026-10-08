@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <queue>
 #include <tuple>
 #include "utils/timer.h"
 #include "utils.h"
@@ -50,9 +51,21 @@ namespace pipeann {
     uint64_t coord_buf_idx = 0;
 
     unsigned cur_list_size = 0;
+    // Running top-k smallest exact distances (for the min-dist / k-th-dist curves).
+    // topk_exact is a max-heap capped at kMetricTopK, so its top is the k-th best.
+    constexpr uint32_t kMetricTopK = 10;  // matches recall@10
+    float best_exact = std::numeric_limits<float>::max();
+    std::priority_queue<float> topk_exact;
     auto compute_exact_dist_and_push = [&](const DiskNode<T> &node, const unsigned id) -> float {
       memcpy(data_buf, node.coords, meta_.data_dim * sizeof(T));
       float cur_expanded_dist = dist_cmp->compare(query, data_buf, (unsigned) aligned_dim);
+      best_exact = std::min(best_exact, cur_expanded_dist);
+      if (stats != nullptr) {
+        topk_exact.push(cur_expanded_dist);
+        if (topk_exact.size() > kMetricTopK) {
+          topk_exact.pop();  // drop the current farthest, keeping the k smallest
+        }
+      }
       if (insert_ctx != nullptr) {
         if (unlikely(coord_buf_idx >= kExpandedNodesFactor * l_search)) {
           LOG(ERROR) << "Please allocate larger coord_buf.";
@@ -98,6 +111,7 @@ namespace pipeann {
 
     while (k < cur_list_size) {
       auto nk = cur_list_size;
+      uint32_t inserted_this_hop = 0;  // new in-range candidates added to the pool this round
       frontier.clear();
       frontier_nhoods.clear();
       frontier_read_reqs.clear();
@@ -172,6 +186,7 @@ namespace pipeann {
           if (dist >= retset[cur_list_size - 1].distance && (cur_list_size == l_search)) {
             continue;
           }
+          inserted_this_hop++;
           Neighbor nn(id, dist, true);
           auto r = InsertIntoPool(retset.data(), cur_list_size, nn);
           if (cur_list_size < l_search) {
@@ -188,6 +203,17 @@ namespace pipeann {
         if (stats != nullptr) {
           stats->cpu_us += (double) cpu_timer.elapsed();
         }
+      }
+
+      // Record per-round search progress (frontier size, best exact distance so
+      // far, and whether the round was "unnecessary" -- added no in-range
+      // candidate), so these can be averaged across queries per hop.
+      if (stats != nullptr && !frontier.empty()) {
+        stats->visited_per_hop.push_back((uint32_t) visited.size());
+        stats->min_dist_per_hop.push_back(best_exact);
+        // k-th best once k nodes are expanded; before that, the farthest seen so far.
+        stats->kth_dist_per_hop.push_back(topk_exact.empty() ? best_exact : topk_exact.top());
+        stats->unnecessary_per_hop.push_back(inserted_this_hop == 0 ? 1 : 0);
       }
 
       if (nk <= k) {

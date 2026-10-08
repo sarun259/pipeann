@@ -1,4 +1,6 @@
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <omp.h>
 #include <ssd_index.h>
 #include <string.h>
@@ -163,17 +165,40 @@ int search_disk_index(int argc, char **argv) {
     pipeann::convert_types<uint32_t, uint32_t>(query_result_tags_32.data(), query_result_tags[test_id].data(),
                                                (size_t) query_num, (size_t) recall_at);
 
-    float mean_latency = (float) pipeann::get_mean_stats(
+    float mean_latency = (float) pipeann::QueryStats::mean(
         stats, query_num, [](const pipeann::QueryStats &stats) { return stats.total_us; });
 
-    float latency_99 = (float) pipeann::get_percentile_stats(
+    float latency_99 = (float) pipeann::QueryStats::percentile(
         stats, query_num, 0.99f, [](const pipeann::QueryStats &stats) { return stats.total_us; });
 
-    float mean_hops = (float) pipeann::get_mean_stats(stats, query_num,
+    float mean_hops = (float) pipeann::QueryStats::mean(stats, query_num,
                                                       [](const pipeann::QueryStats &stats) { return stats.n_hops; });
 
     float mean_ios =
-        (float) pipeann::get_mean_stats(stats, query_num, [](const pipeann::QueryStats &stats) { return stats.n_ios; });
+        (float) pipeann::QueryStats::mean(stats, query_num, [](const pipeann::QueryStats &stats) { return stats.n_ios; });
+
+    // Optional: dump per-query pages accessed (n_ios) for the metrics plots.
+    // Appends "L,n_ios" rows; the caller truncates the file before the sweep.
+    if (output) {
+      if (const char *path = std::getenv("PAGES_PER_SEARCH_OUT")) {
+        std::ofstream f(path, std::ios::app);
+        for (uint64_t i = 0; i < query_num; ++i) {
+          f << L << "," << (uint64_t) stats[i].n_ios << "\n";
+        }
+      }
+      // Per-round search progress: one row per query per expansion round,
+      // "L,query,hop,visited,min_dist,unnecessary,kth_dist".
+      if (const char *path = std::getenv("VISITED_PER_HOP_OUT")) {
+        std::ofstream f(path, std::ios::app);
+        for (uint64_t i = 0; i < query_num; ++i) {
+          for (size_t h = 0; h < stats[i].visited_per_hop.size(); ++h) {
+            f << L << "," << i << "," << h + 1 << "," << stats[i].visited_per_hop[h] << ","
+              << stats[i].min_dist_per_hop[h] << "," << (int) stats[i].unnecessary_per_hop[h] << ","
+              << stats[i].kth_dist_per_hop[h] << "\n";
+          }
+        }
+      }
+    }
 
     delete[] stats;
 

@@ -656,14 +656,19 @@ void LinuxAlignedFileReader::register_buf(void *buf, uint64_t buf_size, int mrid
 }
 
 void LinuxAlignedFileReader::open(const std::string &fname, bool enable_writes = false, bool enable_create = false) {
-  int flags = O_DIRECT | O_LARGEFILE | O_RDWR;
+  // Honor enable_writes: a read-only search can then open indices we lack write
+  // permission on (e.g. prebuilt ones owned by another user). Forcing O_RDWR
+  // made ::open fail with EACCES; with asserts off that left fd=-1, surfacing
+  // only later as an io_submit EBADF.
+  int flags = O_DIRECT | O_LARGEFILE | (enable_writes ? O_RDWR : O_RDONLY);
   if (enable_create) {
     flags |= O_CREAT;
   }
   this->fd = ::open(fname.c_str(), flags, 0644);
-  // error checks
-  assert(this->fd != -1);
-  //  std::cerr << "Opened file : " << fname << std::endl;
+  if (this->fd == -1) {
+    LOG(ERROR) << "open(" << fname << ") failed: " << ::strerror(errno);
+    exit(-1);
+  }
 }
 
 void LinuxAlignedFileReader::close() {
@@ -896,14 +901,19 @@ void LinuxAlignedFileReader::register_buf(void *buf, uint64_t buf_size, int mrid
 }
 
 void LinuxAlignedFileReader::open(const std::string &fname, bool enable_writes = false, bool enable_create = false) {
-  int flags = O_DIRECT | O_LARGEFILE | O_RDWR;
+  // Honor enable_writes: a read-only search can then open indices we lack write
+  // permission on (e.g. prebuilt ones owned by another user). Forcing O_RDWR
+  // made ::open fail with EACCES; with asserts off that left fd=-1, surfacing
+  // only later as an io_submit EBADF.
+  int flags = O_DIRECT | O_LARGEFILE | (enable_writes ? O_RDWR : O_RDONLY);
   if (enable_create) {
     flags |= O_CREAT;
   }
   this->fd = ::open(fname.c_str(), flags, 0644);
-  // error checks
-  assert(this->fd != -1);
-  //  std::cerr << "Opened file : " << fname << std::endl;
+  if (this->fd == -1) {
+    LOG(ERROR) << "open(" << fname << ") failed: " << ::strerror(errno);
+    exit(-1);
+  }
 }
 
 void LinuxAlignedFileReader::close() {

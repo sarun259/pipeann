@@ -24,6 +24,22 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <cstdlib>
+#include <filesystem>
+
+// --- Per-event stats CSV helpers ---------------------------------------------
+// A stats struct (QueryStats / InsertionStats) exposes its plottable scalar
+// fields via StatT::columns() (name + accessor). append_stat_header writes that
+// type's column names after whatever context header the caller wrote; row
+// bodies hoist columns() out of their loop (it rebuilds the accessor list each
+// call) and iterate it directly, since those loops run per event.
+template<typename StatT>
+static void append_stat_header(std::ofstream &f) {
+  for (const auto &c : StatT::columns()) {
+    f << "," << c.first;
+  }
+}
+
 #define MERGE_ROUND 20
 #define NUM_INSERT_THREADS 6
 #define NUM_MERGE_THREADS 20
@@ -70,7 +86,8 @@ std::string GetTruthFileName(std::string &truthFilePrefix, int l_start) {
 // Insert uses DynamicIndex::insert(), which calls insert_in_place with beam_width=8 (params.beam_width).
 template<typename T>
 void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int recall_at, uint64_t L,
-                        DynamicIndex<T> &index, std::string &truthset_file, bool calRecall) {
+                        DynamicIndex<T> &index, std::string &truthset_file, bool calRecall,
+                        std::ofstream *qcsv = nullptr, int step = -1) {
   using TagT = uint32_t;
   unsigned *gt_ids = NULL;
   float *gt_dists = NULL;
@@ -92,11 +109,15 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int 
   std::cout << std::setw(4) << "Ls" << std::setw(12) << "QPS " << std::setw(12) << recall_string << std::endl;
   std::cout << "========================================" << std::endl;
 
+  // Per-query stats only collected when a CSV sink is given (the measured sweeps,
+  // not the progress searches that run while an update is still in flight).
+  std::vector<pipeann::QueryStats> qstats(qcsv ? query_num : 0);
+
   auto s = std::chrono::high_resolution_clock::now();
 #pragma omp parallel for schedule(dynamic) num_threads(NUM_SEARCH_THREADS)
   for (size_t i = 0; i < query_num; i++) {
     index.search(query + i * query_dim, recall_at, L, query_result_tags.data() + i * recall_at,
-                 query_result_dists.data() + i * recall_at);
+                 query_result_dists.data() + i * recall_at, qcsv ? &qstats[i] : nullptr);
   }
   auto e = std::chrono::high_resolution_clock::now();
 
@@ -113,6 +134,18 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int 
 
   std::cout << std::setw(4) << L << std::setw(12) << qps << std::setw(12) << recall << std::endl;
   std::cout << "search current time: " << current_time << std::endl;
+
+  if (qcsv != nullptr) {
+    const auto cols = pipeann::QueryStats::columns();
+    for (size_t i = 0; i < query_num; i++) {
+      *qcsv << step << "," << L << "," << i;
+      for (const auto &c : cols) {
+        *qcsv << "," << c.second(qstats[i]);
+      }
+      *qcsv << "\n";
+    }
+    qcsv->flush();
+  }
 }
 
 template<typename T>
@@ -121,7 +154,8 @@ void merge_kernel(DynamicIndex<T> &index, const std::string &save_prefix) {
 }
 
 template<typename T, typename TagT = uint32_t>
-void deletion_kernel(T *data_load, DynamicIndex<T> &index, std::vector<TagT> &delete_vec, size_t aligned_dim) {
+void deletion_kernel(T *data_load, DynamicIndex<T> &index, std::vector<TagT> &delete_vec, size_t aligned_dim,
+                     int step = -1, std::ofstream *dcsv = nullptr) {
   pipeann::Timer timer;
   size_t npts = delete_vec.size();
   std::vector<double> delete_latencies(npts, 0);
@@ -132,6 +166,14 @@ void deletion_kernel(T *data_load, DynamicIndex<T> &index, std::vector<TagT> &de
     index.lazy_delete(delete_vec[i]);
     delete_latencies[i] = ((double) delete_timer.elapsed());
   }
+  // lazy_delete only marks a tag (the compaction work, and thus DeletionStats,
+  // happens later in merge_deletes); record just the per-tag mark latency here.
+  if (dcsv != nullptr) {
+    for (size_t i = 0; i < npts; i++) {
+      *dcsv << step << "," << delete_vec[i] << "," << delete_latencies[i] << "\n";
+    }
+    dcsv->flush();
+  }
   std::sort(delete_latencies.begin(), delete_latencies.end());
   std::cout << "10p deletion time : " << delete_latencies[(size_t) (0.10 * ((double) npts))] << " ms" << std::endl
             << "50p deletion time : " << delete_latencies[(size_t) (0.5 * ((double) npts))] << " ms" << std::endl
@@ -141,18 +183,32 @@ void deletion_kernel(T *data_load, DynamicIndex<T> &index, std::vector<TagT> &de
 }
 
 template<typename T, typename TagT = uint32_t>
-void insertion_kernel(T *data_load, DynamicIndex<T> &index, std::vector<TagT> &insert_vec, size_t aligned_dim) {
+void insertion_kernel(T *data_load, DynamicIndex<T> &index, std::vector<TagT> &insert_vec, size_t aligned_dim,
+                      int step = -1, std::ofstream *icsv = nullptr) {
   pipeann::Timer timer;
   size_t npts = insert_vec.size();
   std::vector<double> insert_latencies(npts, 0);
+  // One InsertionStats per insert when a CSV sink is given (rows flushed after the loop).
+  std::vector<pipeann::InsertionStats> istats(icsv ? npts : 0);
   std::cout << "Begin Insert" << std::endl;
   std::atomic_size_t success(0);
 #pragma omp parallel for num_threads(NUM_INSERT_THREADS)
   for (int64_t i = 0; i < (int64_t) insert_vec.size(); i++) {
     pipeann::Timer insert_timer;
-    index.insert(data_load + aligned_dim * i, insert_vec[i]);
+    index.insert(data_load + aligned_dim * i, insert_vec[i], nullptr, icsv ? &istats[i] : nullptr);
     success++;
     insert_latencies[i] = ((double) insert_timer.elapsed());
+  }
+  if (icsv != nullptr) {
+    const auto cols = pipeann::InsertionStats::columns();
+    for (size_t i = 0; i < npts; i++) {
+      *icsv << step << "," << insert_vec[i] << "," << insert_latencies[i];
+      for (const auto &c : cols) {
+        *icsv << "," << c.second(istats[i]);
+      }
+      *icsv << "\n";
+    }
+    icsv->flush();
   }
   float time_secs = timer.elapsed() / 1.0e6f;
   std::sort(insert_latencies.begin(), insert_latencies.end());
@@ -209,7 +265,55 @@ void update(const std::string &data_bin, const unsigned L_disk, int step, std::s
   params.L = L_disk;
   DynamicIndex<T> index(dim, pipeann::Metric::L2, &params);
   index.load(save_path, true);  // copy_to_shadow = true
+  // With -DBG_IO_THREAD (enabled in CMakeLists), insert_in_place() commits its
+  // writes on a background thread and holds page locks until that thread runs.
+  // The thread only exists once start_bg_io() is called, so without this the
+  // first insert batch never commits and the next op deadlocks on locked pages.
+  index.start_bg_io();
   index.omp_set_num_threads(NUM_SEARCH_THREADS);
+
+  // Per-event stats sinks (env-gated). STATS_DIR enables raw per-event CSVs;
+  // INDEX_SNAPSHOT_EVERY=N additionally dumps a structural IndexStats snapshot
+  // every N steps. Pointers stay null (no logging) when STATS_DIR is unset.
+  std::string stats_dir = std::getenv("STATS_DIR") ? std::getenv("STATS_DIR") : "";
+  int snapshot_every = std::getenv("INDEX_SNAPSHOT_EVERY") ? std::atoi(std::getenv("INDEX_SNAPSHOT_EVERY")) : 0;
+  std::ofstream ins_csv, del_csv, qry_csv, idx_csv;
+  std::ofstream *ins_p = nullptr, *del_p = nullptr, *qry_p = nullptr;
+  if (!stats_dir.empty()) {
+    std::filesystem::create_directories(stats_dir);
+    ins_csv.open(stats_dir + "/insertions.csv");
+    del_csv.open(stats_dir + "/deletions.csv");
+    qry_csv.open(stats_dir + "/queries.csv");
+    idx_csv.open(stats_dir + "/index_snapshots.csv");
+    ins_csv << "step,tag,latency_us";
+    append_stat_header<pipeann::InsertionStats>(ins_csv);
+    ins_csv << "\n";
+    del_csv << "step,tag,latency_us\n";
+    qry_csv << "step,L,query";
+    append_stat_header<pipeann::QueryStats>(qry_csv);
+    qry_csv << "\n";
+    idx_csv << "label,n_live,n_pages,metric,bin,value\n";  // long/tidy format
+    ins_p = &ins_csv;
+    del_p = &del_csv;
+    qry_p = &qry_csv;
+    std::cout << "stats CSVs -> " << stats_dir << (snapshot_every ? " (index snapshot every "
+              + std::to_string(snapshot_every) + " steps)" : "") << std::endl;
+  }
+
+  // One IndexStats snapshot -> long-format rows (outdeg/indeg per node, page-fill
+  // histogram), tagged by its label so a later step's snapshot appends cleanly.
+  auto write_index_snapshot = [&](std::ofstream &f, const pipeann::IndexStats &s) {
+    for (size_t n = 0; n < s.outdeg.size(); ++n) {
+      f << s.label << "," << s.n_live << "," << s.n_pages << ",outdeg," << n << "," << s.outdeg[n] << "\n";
+    }
+    for (size_t n = 0; n < s.indeg.size(); ++n) {
+      f << s.label << "," << s.n_live << "," << s.n_pages << ",indeg," << n << "," << s.indeg[n] << "\n";
+    }
+    for (size_t b = 0; b < s.entries_per_page.size(); ++b) {
+      f << s.label << "," << s.n_live << "," << s.n_pages << ",page_fill," << b << "," << s.entries_per_page[b] << "\n";
+    }
+    f.flush();
+  };
 
   std::cout << "Searching before inserts: " << std::endl;
 
@@ -220,7 +324,7 @@ void update(const std::string &data_bin, const unsigned L_disk, int step, std::s
   ShowMemoryStatus(index.index_prefix());
 
   for (uint64_t j = 0; j < Lsearch.size(); ++j) {
-    sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[j], index, currentFileName, true);
+    sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[j], index, currentFileName, true, qry_p, -1);
   }
 
   int batch = 100;
@@ -244,10 +348,10 @@ void update(const std::string &data_bin, const unsigned L_disk, int step, std::s
     get_trace<T, TagT>(data_bin, st, st + index_npts, vecs_per_step, delete_vec, insert_vec, data_load);
 
     std::future<void> insert_future = std::async(std::launch::async, insertion_kernel<T, TagT>, data_load.data(),
-                                                 std::ref(index), std::ref(insert_vec), aligned_dim);
+                                                 std::ref(index), std::ref(insert_vec), aligned_dim, i, ins_p);
 
     std::future<void> delete_future = std::async(std::launch::async, deletion_kernel<T, TagT>, data_load.data(),
-                                                 std::ref(index), std::ref(delete_vec), aligned_dim);
+                                                 std::ref(index), std::ref(delete_vec), aligned_dim, i, del_p);
 
     int total_queries = 0;
     std::future_status insert_status;
@@ -279,7 +383,15 @@ void update(const std::string &data_bin, const unsigned L_disk, int step, std::s
     currentFileName = GetTruthFileName(truthset_file, res);
 
     for (uint64_t j = 0; j < Lsearch.size(); ++j) {
-      sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[j], index, currentFileName, true);
+      sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[j], index, currentFileName, true, qry_p, i);
+    }
+
+    // Structural snapshot of the live index every `snapshot_every` steps (and on
+    // the final step). Quiesces bg I/O internally; label carries vectors inserted.
+    if (snapshot_every > 0 && !stats_dir.empty() && (i % snapshot_every == snapshot_every - 1 || i == batch - 1)) {
+      pipeann::IndexStats snap;
+      index.snapshot_index_stats(snap, "step_" + std::to_string(i) + "_n" + std::to_string(res));
+      write_index_snapshot(idx_csv, snap);
     }
 
     if (i == batch - 1) {
@@ -301,7 +413,7 @@ void update(const std::string &data_bin, const unsigned L_disk, int step, std::s
       use_a = !use_a;
 
       for (uint32_t j = 0; j < Lsearch.size(); ++j) {
-        sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[j], index, currentFileName, true);
+        sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[j], index, currentFileName, true, qry_p, i);
       }
       std::cout << "Merge finished " << std::endl;
     }

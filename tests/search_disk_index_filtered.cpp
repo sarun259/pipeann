@@ -106,16 +106,16 @@ int search_disk_index(int argc, char **argv) {
     float qps = (float) query_num / diff.count();
 
     float mean_latency =
-        pipeann::get_mean_stats(stats, query_num, [](const pipeann::QueryStats &s) { return s.total_us; });
+        pipeann::QueryStats::mean(stats, query_num, [](const pipeann::QueryStats &s) { return s.total_us; });
     float latency_99 =
-        pipeann::get_percentile_stats(stats, query_num, 0.99f, [](const pipeann::QueryStats &s) { return s.total_us; });
-    float mean_hops = pipeann::get_mean_stats(stats, query_num, [](const pipeann::QueryStats &s) { return s.n_hops; });
-    float mean_ios = pipeann::get_mean_stats(stats, query_num, [](const pipeann::QueryStats &s) { return s.n_ios; });
+        pipeann::QueryStats::percentile(stats, query_num, 0.99f, [](const pipeann::QueryStats &s) { return s.total_us; });
+    float mean_hops = pipeann::QueryStats::mean(stats, query_num, [](const pipeann::QueryStats &s) { return s.n_hops; });
+    float mean_ios = pipeann::QueryStats::mean(stats, query_num, [](const pipeann::QueryStats &s) { return s.n_ios; });
 
     float filter_ratio[pipeann::N_FILTER_TYPES] = {0};
     for (int i = 0; i < pipeann::N_FILTER_TYPES; i++) {
       filter_ratio[i] =
-          pipeann::get_mean_stats(stats, query_num, [i](const pipeann::QueryStats &s) { return s.n_filter[i]; });
+          pipeann::QueryStats::mean(stats, query_num, [i](const pipeann::QueryStats &s) { return s.n_filter[i]; });
     }
 
     struct FilterStats {
@@ -129,19 +129,19 @@ int search_disk_index(int argc, char **argv) {
 
     for (int i = 0; i < pipeann::N_FILTER_TYPES; i++) {
       filter_stats.n_est_filter_reads[i] =
-          pipeann::get_mean_stats(stats, query_num * filter_ratio[i], query_num,
+          pipeann::QueryStats::mean(stats, query_num * filter_ratio[i], query_num,
                                   [i](const pipeann::QueryStats &s) { return s.n_est_filter_reads[i]; });
       filter_stats.n_filter_reads[i] =
-          pipeann::get_mean_stats(stats, query_num * filter_ratio[i], query_num,
+          pipeann::QueryStats::mean(stats, query_num * filter_ratio[i], query_num,
                                   [i](const pipeann::QueryStats &s) { return s.n_filter_reads[i]; });
       filter_stats.n_filter_accessed_vectors[i] =
-          pipeann::get_mean_stats(stats, query_num * filter_ratio[i], query_num,
+          pipeann::QueryStats::mean(stats, query_num * filter_ratio[i], query_num,
                                   [i](const pipeann::QueryStats &s) { return s.n_filter_accessed_vectors[i]; });
       filter_stats.n_filter_false_positives[i] =
-          pipeann::get_mean_stats(stats, query_num * filter_ratio[i], query_num,
+          pipeann::QueryStats::mean(stats, query_num * filter_ratio[i], query_num,
                                   [i](const pipeann::QueryStats &s) { return s.n_filter_false_positives[i]; });
       filter_stats.n_est_filter_cmps[i] =
-          pipeann::get_mean_stats(stats, query_num * filter_ratio[i], query_num,
+          pipeann::QueryStats::mean(stats, query_num * filter_ratio[i], query_num,
                                   [i](const pipeann::QueryStats &s) { return s.n_est_filter_cmps[i]; });
     }
     delete[] stats;

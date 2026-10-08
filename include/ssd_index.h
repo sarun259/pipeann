@@ -15,7 +15,7 @@
 #include "filter/selector.h"
 #include "utils/concurrent_queue.h"
 #include "utils/lock_table.h"
-#include "utils/percentile_stats.h"
+#include "utils/stats.h"
 #include "utils/tsl/robin_map.h"
 #include "nbr/abstract_nbr.h"
 #include "utils.h"
@@ -226,11 +226,21 @@ namespace pipeann {
                                 Selector *selector, const Attributes &query_attrs, TagT *res_tags, float *res_dists,
                                 const uint64_t beam_width, QueryStats *stats = nullptr);
 
-    int insert_in_place(const T *point, const TagT &tag, const Attributes *attrs = nullptr, QueryStats *stats = nullptr,
-                        uint64_t *pages = nullptr, uint64_t *close = nullptr, uint64_t begun = 0);
+    int insert_in_place(const T *point, const TagT &tag, const Attributes *attrs = nullptr,
+                        InsertionStats *stats = nullptr, uint64_t *pages = nullptr, uint64_t *close = nullptr,
+                        uint64_t begun = 0);
 
     void start_bg_io();
     void stop_bg_io();
+
+    // Fill `out` with structural metrics of the *live* graph by scanning the
+    // on-disk index and mapping each slot through loc2id (so it is correct even
+    // after dynamic updates break the equal id==loc mapping): out-degree and
+    // in-degree per live node, the live-slots-per-page histogram, n_live and
+    // n_pages. c2_coverage is left empty (exact C2 is O(N^2); the offline
+    // tests/index_metrics tool computes it on a static index). The caller must
+    // quiesce writes first (stop_bg_io()) so the file matches loc2id_.
+    void compute_index_stats(IndexStats &out, const std::string &label = "");
 
     // Merge deletes (NOTE: index read-only during merge.)
     // Returns id_map: old_id -> new_id.
@@ -238,7 +248,7 @@ namespace pipeann {
                                                                 const std::string &out_path_prefix,
                                                                 const std::vector<TagT> &deleted_nodes,
                                                                 const tsl::robin_set<TagT> &deleted_nodes_set,
-                                                                uint32_t nthreads);
+                                                                uint32_t nthreads, DeletionStats *stats = nullptr);
 
     // After merge, reload the index.
     void reload(const char *index_prefix);

@@ -131,31 +131,31 @@ int search_disk_index(int argc, char **argv) {
     pipeann::convert_types<uint32_t, uint32_t>(query_result_tags_32.data(), query_result_tags[test_id].data(),
                                                (size_t) query_num, (size_t) recall_at);
 
-    float mean_latency = (float) pipeann::get_mean_stats(
+    float mean_latency = (float) pipeann::QueryStats::mean(
         stats, query_num, [](const pipeann::QueryStats &stats) { return stats.total_us; });
 
-    float latency_99 = (float) pipeann::get_percentile_stats(
+    float latency_99 = (float) pipeann::QueryStats::percentile(
         stats, query_num, 0.99f, [](const pipeann::QueryStats &stats) { return stats.total_us; });
 
-    float mean_hops = (float) pipeann::get_mean_stats(stats, query_num,
+    float mean_hops = (float) pipeann::QueryStats::mean(stats, query_num,
                                                       [](const pipeann::QueryStats &stats) { return stats.n_hops; });
 
     float mean_ios =
-        (float) pipeann::get_mean_stats(stats, query_num, [](const pipeann::QueryStats &stats) { return stats.n_ios; });
+        (float) pipeann::QueryStats::mean(stats, query_num, [](const pipeann::QueryStats &stats) { return stats.n_ios; });
 
-    float mean_cpuus = (float) pipeann::get_mean_stats(stats, query_num,
+    float mean_cpuus = (float) pipeann::QueryStats::mean(stats, query_num,
                                                        [](const pipeann::QueryStats &stats) { return stats.cpu_us; });
 
-    float mean_cpu1us = (float) pipeann::get_mean_stats(stats, query_num,
+    float mean_cpu1us = (float) pipeann::QueryStats::mean(stats, query_num,
                                                         [](const pipeann::QueryStats &stats) { return stats.cpu_us1; });
 
-    float mean_cpu2us = (float) pipeann::get_mean_stats(stats, query_num,
+    float mean_cpu2us = (float) pipeann::QueryStats::mean(stats, query_num,
                                                         [](const pipeann::QueryStats &stats) { return stats.cpu_us2; });
 
     float mean_ious =
-        (float) pipeann::get_mean_stats(stats, query_num, [](const pipeann::QueryStats &stats) { return stats.io_us; });
+        (float) pipeann::QueryStats::mean(stats, query_num, [](const pipeann::QueryStats &stats) { return stats.io_us; });
 
-    float mean_io1us = (float) pipeann::get_mean_stats(stats, query_num,
+    float mean_io1us = (float) pipeann::QueryStats::mean(stats, query_num,
                                                        [](const pipeann::QueryStats &stats) { return stats.io_us1; });
     delete[] stats;
 

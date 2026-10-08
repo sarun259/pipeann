@@ -415,11 +415,12 @@ class DynamicIndex : public BaseDynamicIndex {
   }
 
   // Single-point insert (for C++ benchmarks / streaming updates). `stats`,
-  // if given, is populated with the disk-path search stats (n_ios, n_cmps,
-  // total_us, ...) of the insert's internal do_pipe_search call -- null
-  // (mem-index-only) inserts leave it untouched.
+  // if given, is populated with the insert's graph-mutation counters plus the
+  // disk-path search stats (n_ios, n_cmps, total_us, ...) of its internal
+  // do_pipe_search call, under stats->search. Null (mem-index-only) inserts
+  // leave it untouched.
   int insert(const T *point, const TagT &tag, const pipeann::Attributes *attrs = nullptr,
-             pipeann::QueryStats *stats = nullptr, std::uint64_t *pages = nullptr,
+             pipeann::InsertionStats *stats = nullptr, std::uint64_t *pages = nullptr,
              std::uint64_t *close = nullptr, std::uint64_t begun = 0) {
     auto mu = std::shared_lock<std::shared_mutex>(save_mu_);
     do_insert(point, tag, attrs, stats, pages, close, begun);
@@ -432,6 +433,18 @@ class DynamicIndex : public BaseDynamicIndex {
 
   void stop_bg_io() {
     if (use_disk_index_) disk_index_->stop_bg_io();
+  }
+
+  // Quiesce background commit I/O, then fill a structural snapshot of the live
+  // disk index into `out` (see SSDIndex::compute_index_stats), and resume I/O.
+  // Intended to be called between update steps, when inserts/deletes are joined.
+  void snapshot_index_stats(pipeann::IndexStats &out, const std::string &label = "") {
+    if (!use_disk_index_) {
+      return;
+    }
+    disk_index_->stop_bg_io();
+    disk_index_->compute_index_stats(out, label);
+    disk_index_->start_bg_io();
   }
 
   // Single-point lazy delete (marks tag for future merge).
@@ -518,7 +531,7 @@ class DynamicIndex : public BaseDynamicIndex {
 
  private:
   void do_insert(const T *point_p, TagT tag, const pipeann::Attributes *attrs = nullptr,
-                 pipeann::QueryStats *stats = nullptr, std::uint64_t *pages = nullptr,
+                 pipeann::InsertionStats *stats = nullptr, std::uint64_t *pages = nullptr,
                  std::uint64_t *close = nullptr, std::uint64_t begun = 0) {
     if (use_disk_index_) {
       int target_id = disk_index_->insert_in_place(point_p, tag, attrs, stats, pages, close, begun);

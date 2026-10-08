@@ -16,7 +16,7 @@
 #include <shared_mutex>
 #include <sstream>
 #include <string>
-#include "utils/percentile_stats.h"
+#include "utils/stats.h"
 #include "utils/tsl/robin_set.h"
 #include <unordered_map>
 

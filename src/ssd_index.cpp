@@ -616,6 +616,80 @@ namespace pipeann {
   }
 
   template<typename T, typename TagT>
+  void SSDIndex<T, TagT>::compute_index_stats(IndexStats &out, const std::string &label) {
+    const uint64_t nps = meta_.nnodes_per_sector;
+    if (nps == 0) {
+      // Dense (multi-sector-per-node) layout: this sequential slot scan does not
+      // apply. Bail loudly rather than emit wrong numbers.
+      LOG(ERROR) << "compute_index_stats: nnodes_per_sector==0 (dense layout) unsupported";
+      return;
+    }
+    const uint64_t tail_loc = cur_loc.load();              // one past the last appended slot
+    const uint64_t n_data_pages = (tail_loc + nps - 1) / nps;
+
+    out.label = label;
+    out.nnodes_per_sector = nps;
+    out.n_pages = n_data_pages;
+    out.outdeg.clear();
+    out.indeg.clear();
+    out.entries_per_page.assign(nps + 1, 0);  // histogram over #live slots in a page
+    out.c2_coverage.clear();                   // not computed live
+
+    // In-degree is tallied by node id across the whole graph, then read back per
+    // live node. Ids run up to cur_id (one allocated per insert since the last merge).
+    const uint64_t max_id = cur_id.load();
+    std::vector<uint32_t> indeg_by_id(max_id, 0);
+    std::vector<std::pair<uint32_t, uint32_t>> live;  // (id, out-degree) per live node, in loc order
+    live.reserve(tail_loc);
+
+    std::ifstream in(disk_index_file.c_str(), std::ios::binary);
+    if (!in) {
+      LOG(ERROR) << "compute_index_stats: cannot open " << disk_index_file;
+      return;
+    }
+    in.seekg(SECTOR_LEN, std::ios::beg);  // sector 0 is metadata; data sectors follow
+
+    constexpr uint64_t kChunkSectors = 16384;  // 64 MB reads
+    std::vector<char> buf(kChunkSectors * SECTOR_LEN);
+    uint64_t loc = 0;
+    for (uint64_t page = 0; page < n_data_pages; page += kChunkSectors) {
+      uint64_t pages = std::min(kChunkSectors, n_data_pages - page);
+      in.read(buf.data(), pages * SECTOR_LEN);
+      for (uint64_t p = 0; p < pages; ++p) {
+        char *sector = buf.data() + p * SECTOR_LEN;
+        uint64_t live_in_page = 0;
+        for (uint64_t s = 0; s < nps && loc < tail_loc; ++s, ++loc) {
+          uint32_t id = loc2id((uint32_t) loc);
+          if (id == kInvalidID || id == kAllocatedID) {
+            continue;  // hole: counts against this page's fill, holds no node
+          }
+          DiskNode<T> node = node_from_page(sector, (uint32_t) loc);
+          uint32_t nn = node.nnbrs;
+          live.emplace_back(id, nn);
+          for (uint32_t m = 0; m < nn; ++m) {
+            uint32_t nbr = node.nbrs[m];
+            if (nbr < max_id) {  // guard against stale ids beyond the current id space
+              indeg_by_id[nbr]++;
+            }
+          }
+          ++live_in_page;
+        }
+        out.entries_per_page[live_in_page]++;
+      }
+      LOG(INFO) << "compute_index_stats: scanned " << loc << " / " << tail_loc << " locs";
+    }
+
+    out.n_live = live.size();
+    out.outdeg.reserve(live.size());
+    out.indeg.reserve(live.size());
+    for (const auto &[id, od] : live) {
+      out.outdeg.push_back(od);
+      out.indeg.push_back(indeg_by_id[id]);
+    }
+    LOG(INFO) << "compute_index_stats[" << label << "]: n_live=" << out.n_live << " n_pages=" << out.n_pages;
+  }
+
+  template<typename T, typename TagT>
   TagT SSDIndex<T, TagT>::id2tag(uint32_t id) {
 #ifdef NO_MAPPING
     return id;  // use ID to replace tags.

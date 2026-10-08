@@ -19,6 +19,9 @@ target_link_libraries(overall_perf_mem ${PROJECT_NAME})
 add_executable(search_disk_index search_disk_index.cpp)
 target_link_libraries(search_disk_index ${PROJECT_NAME})
 
+add_executable(index_metrics index_metrics.cpp)
+target_link_libraries(index_metrics ${PROJECT_NAME})
+
 add_executable(search_disk_index_mem search_disk_index_mem.cpp)
 target_link_libraries(search_disk_index_mem ${PROJECT_NAME})
 
@@ -33,4 +36,8 @@ target_link_libraries(build_disk_index_filtered ${PROJECT_NAME})
 
 add_executable(search_disk_index_filtered search_disk_index_filtered.cpp)
 target_link_libraries(search_disk_index_filtered ${PROJECT_NAME})
+
+# Standalone only: the umbrella build configures tests/utils/ itself, so it is
+# not pulled in above. Needed here for compute_groundtruth (GT generation).
+add_subdirectory(utils)
 

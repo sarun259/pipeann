@@ -172,13 +172,25 @@ endif()
 
 add_subdirectory(src)
 
+# Standalone (non-umbrella) builds: compile tests/ so the documented test
+# binaries are available. Guarded by PROJECT_IS_TOP_LEVEL so the fnct-db
+# umbrella build (which includes this via add_subdirectory and configures
+# tests/ itself) is unaffected and sees no duplicate target names.
+if(PROJECT_IS_TOP_LEVEL)
+	add_subdirectory(tests)
+endif()
+
 # tests/ and tests/utils/ are dropped: they share eleven target names with
 # DGAI, which the fnct-db umbrella build configures in the same tree. The
 # bench sources live in ${EVALDIR} next to DGAI's and SPFresh's, so all three
 # systems' bench code can be read side by side, but they must be compiled
 # here to inherit this directory's definitions.
-foreach(dataset sift deep spacev)
-	add_executable(pipeann_${dataset} "${EVALDIR}/bench_pipeann_${dataset}.cpp")
-	target_include_directories(pipeann_${dataset} PRIVATE "${EVALDIR}")
-	target_link_libraries(pipeann_${dataset} ${PROJECT_NAME})
-endforeach()
+# Guarded by DEFINED EVALDIR so a standalone build (which never sets it) does
+# not try to compile nonexistent ${EVALDIR}/bench_pipeann_*.cpp sources.
+if(DEFINED EVALDIR)
+	foreach(dataset sift deep spacev)
+		add_executable(pipeann_${dataset} "${EVALDIR}/bench_pipeann_${dataset}.cpp")
+		target_include_directories(pipeann_${dataset} PRIVATE "${EVALDIR}")
+		target_link_libraries(pipeann_${dataset} ${PROJECT_NAME})
+	endforeach()
+endif()

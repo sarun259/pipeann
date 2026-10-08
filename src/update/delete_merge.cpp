@@ -25,7 +25,12 @@ namespace pipeann {
   template<typename T, typename TagT>
   libcuckoo::cuckoohash_map<uint32_t, uint32_t> SSDIndex<T, TagT>::merge_deletes(
       const std::string &in_path_prefix, const std::string &out_path_prefix, const std::vector<TagT> &deleted_nodes,
-      const tsl::robin_set<TagT> &deleted_nodes_set, uint32_t nthreads) {
+      const tsl::robin_set<TagT> &deleted_nodes_set, uint32_t nthreads, DeletionStats *stats) {
+    // TODO(insert+delete workload): populate `stats` (n_nodes_deleted,
+    // n_pages_freed, n_back_edges_pruned, n_pages_rewritten) here. Compaction
+    // frees pages (feeds alloc rule 1) and prunes back-edges to deleted nodes --
+    // the natural update sites for those counters. No counters wired yet.
+    (void) stats;
     const uint32_t n_sampled_nbrs = this->params.sampled_nbrs_for_delete;
     if (nthreads == 0) {
       LOG(INFO) << "nthreads for merge unspecified, using max threads: " << omp_get_max_threads();

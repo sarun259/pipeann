@@ -138,7 +138,7 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int 
   std::cout << "search current time: " << current_time << std::endl;
 
   float mean_ios =
-      (float) pipeann::get_mean_stats(stats, query_num, [](const pipeann::QueryStats &stats) { return stats.n_ios; });
+      (float) pipeann::QueryStats::mean(stats, query_num, [](const pipeann::QueryStats &stats) { return stats.n_ios; });
 
   std::sort(latency_stats.begin(), latency_stats.end());
   std::cout << std::setw(4) << L << std::setw(12) << qps << std::setw(18)

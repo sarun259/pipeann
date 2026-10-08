@@ -2,8 +2,8 @@
 
 #include <cstdint>
 
-// Device-level read accounting. QueryStats::n_ios and n_rmw_reads count the
-// pages the search and the read-modify-write asked for, which the user-space
+// Device-level read accounting. QueryStats::n_ios and InsertionStats::n_rmw_reads
+// count the pages the search and the read-modify-write asked for, which the user-space
 // page cache may serve without touching the drive. This counter is bumped
 // where a read is actually submitted to the device, so a caller that samples
 // it before and after an operation learns what that operation cost the drive.

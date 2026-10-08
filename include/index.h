@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 #include "ssd_index_defs.h"
-#include "utils/percentile_stats.h"
+#include "utils/stats.h"
 #include "utils/tsl/robin_set.h"
 #include "utils/lock_table.h"
 
